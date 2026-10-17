@@ -2,9 +2,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
 #include <stdarg.h>
 #include "radar.h"
-#include "page.h"
 
 static const char *AP_SSID = "freddy-galea";
 static const char *AP_PASS = "midbarXpress";
@@ -87,9 +87,8 @@ void setup() {
   WiFi.softAP(AP_SSID, AP_PASS);
   Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-    req->send(200, "text/html", (const uint8_t *)PAGE_HTML, sizeof(PAGE_HTML) - 1);
-  });
+  if (!LittleFS.begin()) Serial.println("LittleFS mount failed - run: pio run -t uploadfs");
+  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
   server.addHandler(&ws);
   server.begin();
 

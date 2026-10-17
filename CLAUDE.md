@@ -24,6 +24,7 @@ ESP32-S2 mini reads HLK-LD2410C 24GHz radar(s) and serves a web page to a nearby
 - PlatformIO, Arduino framework, `board = lolin_s2_mini`
 - Radar lib: `MyLD2410` (supports LD2410C)
 - Web: `ESPAsyncWebServer` + `AsyncTCP` (mathieucarbou forks)
+- Web page: `data/index.html` served from LittleFS (`pio run -t upload -t uploadfs`)
 - `Serial1.begin(256000, SERIAL_8N1, 16, 17);`
 
 ## Tasks
