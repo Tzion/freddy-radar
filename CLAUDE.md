@@ -7,16 +7,16 @@ ESP32-S2 mini reads HLK-LD2410C 24GHz radar(s) and serves a web page to a nearby
 ## Hardware
 - MCU: Wemos/Lolin ESP32-S2 mini v1.0.0 (native USB → `Serial` = USB CDC)
 - Sensor: HLK-LD2410C (5V power, 3.3V UART logic, 256000 baud 8N1, ±60° cone, ~5–6m, 0.75m gates)
-- Phase 1: ONE radar on hardware UART1 (`Serial1`)
+- Phase 1: TWO radars on hardware UARTs (`Serial1`, `Serial0`)
 
 ## Wiring (phase 1)
-| LD2410C | S2 mini |
-|---|---|
-| VCC | VBUS/5V |
-| GND | GND |
-| TX | GPIO16 (Serial1 RX) |
-| RX | GPIO17 (Serial1 TX) |
-| OUT | GPIO18 (input, presence bit) |
+| LD2410C | Radar 0 (`Serial1`) | Radar 1 (`Serial0`) |
+|---|---|---|
+| VCC | VBUS/5V | VBUS/5V |
+| GND | GND | GND |
+| TX | GPIO16 (RX) | GPIO11 (RX) |
+| RX | GPIO17 (TX) | GPIO12 (TX) |
+| OUT | GPIO18 | GPIO13 |
 - 100µF + 100nF across radar VCC/GND. No level shifter.
 - Avoid GPIO0/45/46 (strapping), 19/20 (USB), 15 (onboard LED).
 
@@ -24,7 +24,7 @@ ESP32-S2 mini reads HLK-LD2410C 24GHz radar(s) and serves a web page to a nearby
 - PlatformIO, Arduino framework, `board = lolin_s2_mini`
 - Radar lib: `MyLD2410` (supports LD2410C)
 - Web: `ESPAsyncWebServer` + `AsyncTCP` (mathieucarbou forks)
-- Web page: `data/index.html` served from LittleFS (`pio run -t upload -t uploadfs`)
+- Web page: `data/index.html` served from LittleFS (`pio run -t uploadfs`, separate from `-t upload`)
 - `Serial1.begin(256000, SERIAL_8N1, 16, 17);`
 
 ## Tasks

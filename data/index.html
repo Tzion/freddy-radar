@@ -1,64 +1,207 @@
 <!doctype html>
-<html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Freddy Radar</title>
-<style>
-body{font-family:ui-monospace,Menlo,monospace;background:#111;color:#ddd;margin:0}
-#top{height:50vh;height:50dvh;overflow:auto;padding:12px;box-sizing:border-box}
-#radar{display:block;width:100%;height:50vh;height:50dvh}
-h1{font-size:18px;margin:0 0 8px}
-#conn{font-size:12px;color:#888}
-.r{border:1px solid #333;border-radius:8px;padding:10px;margin:10px 0}
-.p{font-size:28px;font-weight:bold;margin:4px 0}
-.on{color:#4f4}.off{color:#666}
-pre{margin:6px 0 0;font-size:13px;line-height:1.3}
-</style></head><body>
-<div id="top">
-<h1>Freddy Radar <span id="conn">connecting…</span></h1>
-<div id="rs"></div>
-</div>
-<canvas id="radar"></canvas>
-<script>
-const bar=(v)=>'#'.repeat(Math.round(v/5)).padEnd(20,'.');
-function render(d){
-  document.getElementById('rs').innerHTML=d.radars.map(r=>{
-    if(!r.online)return `<div class="r">R${r.id} <span class="off">offline</span> · OUT=${+r.out}</div>`;
-    let g='gate  dist  moving               stationary\n';
-    for(let i=0;i<r.mGates.length;i++)
-      g+=`${i}   ${(i*0.75).toFixed(2)}m ${bar(r.mGates[i])} ${bar(r.sGates[i])}\n`;
-    return `<div class="r">R${r.id}
-<div class="p ${r.presence?'on':'off'}">${r.presence?'PRESENT':'empty'}</div>
-<pre>moving     ${r.moving?r.mDist+'cm  e'+r.mSig:'-'}
-stationary ${r.stationary?r.sDist+'cm  e'+r.sSig:'-'}
-OUT pin    ${+r.out}
-${r.mGates.length?g:''}</pre></div>`;
-  }).join('');
-}
-function connect(){
-  const c=document.getElementById('conn');
-  const ws=new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen=()=>c.textContent='live';
-  ws.onmessage=(e)=>render(JSON.parse(e.data));
-  ws.onclose=()=>{c.textContent='reconnecting…';setTimeout(connect,1000)};
-}
-connect();
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Freddy Radar</title>
+  <style>
+    body {
+      font-family: ui-monospace, Menlo, monospace;
+      background: #111;
+      color: #ddd;
+      margin: 0;
+    }
 
-// Radar view. Angles are compass-style: 0deg = up, clockwise.
-const FOV_FROM=245, FOV_TO=115;
-const rad=(deg)=>(deg-90)*Math.PI/180; // compass -> canvas angle
-function drawRadar(){
-  const cv=document.getElementById('radar'), dpr=devicePixelRatio||1;
-  const w=cv.clientWidth, h=cv.clientHeight;
-  cv.width=w*dpr; cv.height=h*dpr;
-  const ctx=cv.getContext('2d');
-  ctx.scale(dpr,dpr);
-  const cx=w/2, cy=h/2, R=Math.min(w,h)/2-10;
-  ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R,rad(FOV_FROM),rad(FOV_TO)); ctx.closePath();
-  ctx.fillStyle='rgba(68,255,68,0.15)'; ctx.fill();
-  ctx.strokeStyle='#4f4'; ctx.lineWidth=1; ctx.stroke();
-  ctx.beginPath(); ctx.arc(cx,cy,R,0,2*Math.PI);
-  ctx.strokeStyle='#555'; ctx.stroke();
-}
-addEventListener('resize',drawRadar);
-drawRadar();
-</script></body></html>
+    /* Top half: status. Bottom half: radar view. */
+    #status-panel {
+      height: 50vh;
+      height: 50dvh;
+      overflow: auto;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    #radar-canvas {
+      display: block;
+      width: 100%;
+      height: 50vh;
+      height: 50dvh;
+    }
+
+    h1 {
+      font-size: 18px;
+      margin: 0 0 8px;
+    }
+    #connection-status {
+      font-size: 12px;
+      color: #888;
+    }
+
+    /* Sensor connection lights */
+    #sensor-lights span {
+      margin-right: 14px;
+    }
+    .sensor-light {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 5px;
+      vertical-align: -1px;
+      background: #555;
+    }
+    .sensor-light.connected    { background: #2d2; }
+    .sensor-light.disconnected { background: #e33; }
+
+    /* Per-radar card */
+    .radar-card {
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 10px;
+      margin: 10px 0;
+    }
+    .presence {
+      font-size: 28px;
+      font-weight: bold;
+      margin: 4px 0;
+    }
+    .active   { color: #4f4; }
+    .inactive { color: #666; }
+    pre {
+      margin: 6px 0 0;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+  </style>
+</head>
+<body>
+  <div id="status-panel">
+    <h1>Freddy Radar <span id="connection-status">connecting…</span></h1>
+    <div id="sensor-lights"></div>
+    <div id="radar-cards"></div>
+  </div>
+  <canvas id="radar-canvas"></canvas>
+
+  <script>
+    // ---------- Status panel ----------
+
+    const GATE_SIZE_METERS = 0.75;
+    const ENERGY_BAR_LENGTH = 20; // energy 0..100 -> 0..20 '#' characters
+
+    function energyBar(energy) {
+      const filled = Math.round(energy / (100 / ENERGY_BAR_LENGTH));
+      return '#'.repeat(filled).padEnd(ENERGY_BAR_LENGTH, '.');
+    }
+
+    function renderSensorLights(radars) {
+      document.getElementById('sensor-lights').innerHTML = radars.map(radar => {
+        const state = radar.online ? 'connected' : 'disconnected';
+        return `<span><i class="sensor-light ${state}"></i>R${radar.id}</span>`;
+      }).join('');
+    }
+
+    function renderGateTable(radar) {
+      let table = 'gate  dist  moving               stationary\n';
+      for (let gate = 0; gate < radar.mGates.length; gate++) {
+        const distance = (gate * GATE_SIZE_METERS).toFixed(2);
+        table += `${gate}   ${distance}m ${energyBar(radar.mGates[gate])} ${energyBar(radar.sGates[gate])}\n`;
+      }
+      return table;
+    }
+
+    function renderRadarCard(radar) {
+      if (!radar.online) {
+        return `<div class="radar-card">R${radar.id} <span class="inactive">offline</span> · OUT=${+radar.out}</div>`;
+      }
+      const presenceClass = radar.presence ? 'active' : 'inactive';
+      const presenceText = radar.presence ? 'PRESENT' : 'empty';
+      const movingText = radar.moving ? `${radar.mDist}cm  e${radar.mSig}` : '-';
+      const stationaryText = radar.stationary ? `${radar.sDist}cm  e${radar.sSig}` : '-';
+      const gateTable = radar.mGates.length ? renderGateTable(radar) : '';
+      return `<div class="radar-card">R${radar.id}
+<div class="presence ${presenceClass}">${presenceText}</div>
+<pre>moving     ${movingText}
+stationary ${stationaryText}
+OUT pin    ${+radar.out}
+${gateTable}</pre></div>`;
+    }
+
+    function renderStatus(status) {
+      renderSensorLights(status.radars);
+      document.getElementById('radar-cards').innerHTML = status.radars.map(renderRadarCard).join('');
+    }
+
+    // ---------- WebSocket connection to the ESP32 ----------
+
+    const RECONNECT_DELAY_MS = 1000;
+
+    function connect() {
+      const connectionStatus = document.getElementById('connection-status');
+      const socket = new WebSsocket(`ws://${location.host}/ws`);
+
+      socket.onopen = () => {
+        connectionStatus.textContent = 'live';
+      };
+      socket.onmessage = (event) => {
+        renderStatus(JSON.parse(event.data));
+      };
+      socket.onclose = () => {
+        connectionStatus.textContent = 'reconnecting…';
+        // Sensor state is unknown while disconnected: show lights as gray.
+        document.querySelectorAll('.sensor-light').forEach(light => light.className = 'sensor-light');
+        setTimeout(connect, RECONNECT_DELAY_MS);
+      };
+    }
+    connect();
+
+    // ---------- Radar view ----------
+
+    // Angles are compass-style: 0deg = up, clockwise.
+    const FIELD_OF_VIEW_FROM_DEG = 245;
+    const FIELD_OF_VIEW_TO_DEG = 115;
+    const CIRCLE_MARGIN_PX = 10;
+
+    // Canvas measures angles from the right (east); compass measures from the top.
+    function compassToCanvasRadians(degrees) {
+      return (degrees - 90) * Math.PI / 180;
+    }
+
+    function drawRadar() {
+      const canvas = document.getElementById('radar-canvas');
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+
+      // Render at device resolution so lines stay sharp on high-DPI phones.
+      canvas.width = width * pixelRatio;
+      canvas.height = height * pixelRatio;
+      const context = canvas.getContext('2d');
+      context.scale(pixelRatio, pixelRatio);
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = Math.min(width, height) / 2 - CIRCLE_MARGIN_PX;
+
+      // Field-of-view sector
+      context.beginPath();
+      context.moveTo(centerX, centerY);
+      context.arc(centerX, centerY, radius,
+        compassToCanvasRadians(FIELD_OF_VIEW_FROM_DEG),
+        compassToCanvasRadians(FIELD_OF_VIEW_TO_DEG));
+      context.closePath();
+      context.fillStyle = 'rgba(68, 255, 68, 0.15)';
+      context.fill();
+      context.strokeStyle = '#4f4';
+      context.lineWidth = 1;
+      context.stroke();
+
+      // Outer circle
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+      context.strokeStyle = '#555';
+      context.stroke();
+    }
+    window.addEventListener('resize', drawRadar);
+    drawRadar();
+  </script>
+</body>
+</html>

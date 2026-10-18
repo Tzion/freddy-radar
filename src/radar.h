@@ -12,7 +12,7 @@ struct Radar {
   Radar(Stream &uart, int outPin) : outPin(outPin), dev(uart) {}
 
   void begin() {
-    pinMode(outPin, INPUT);
+    pinMode(outPin, INPUT_PULLDOWN); // reads 0 if no radar is wired
     if (dev.begin()) dev.enhancedMode(true); // per-gate energies
   }
 

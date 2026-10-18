@@ -17,6 +17,7 @@ static const uint32_t LOG_PERIOD_MS = 500; // USB serial log at 2 Hz
 // S2 has 2 hardware UARTs: Serial0 and Serial1.
 static Radar radars[] = {
     {Serial1, 18},
+    {Serial0, 13},
 };
 static const size_t NUM_RADARS = sizeof(radars) / sizeof(radars[0]);
 
@@ -93,6 +94,7 @@ void setup() {
   server.begin();
 
   Serial1.begin(RADAR_BAUD, SERIAL_8N1, 16, 17); // radar 0: RX=16, TX=17
+  Serial0.begin(RADAR_BAUD, SERIAL_8N1, 11, 12); // radar 1: RX=11, TX=12
   for (Radar &r : radars) r.begin();
 }
 
