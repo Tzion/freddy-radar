@@ -25,6 +25,7 @@
       width: 100%;
       height: 50vh;
       height: 50dvh;
+      background: #000;
     }
 
     h1 {
@@ -36,48 +37,67 @@
       color: #888;
     }
 
-    /* Sensor connection lights */
-    #sensor-lights span {
-      margin-right: 14px;
+    /* One column per sensor, side by side (radar 0 left, radar 1 right like the scope) */
+    #sensor-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
     }
-    .sensor-light {
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      margin-right: 5px;
-      vertical-align: -1px;
-      background: #555;
+    .sensor-column {
+      min-width: 0; /* let the gate table scroll instead of widening the column */
     }
-    .sensor-light.connected    { background: #2d2; }
-    .sensor-light.disconnected { background: #e33; }
 
-    /* Per-radar card */
-    .radar-card {
-      border: 1px solid #333;
-      border-radius: 8px;
+    /* Sensor tile: state is shown by color only. Brightness = activity, like the scope. */
+    .sensor-tile {
       padding: 10px;
-      margin: 10px 0;
-    }
-    .presence {
-      font-size: 28px;
+      border-radius: 8px;
+      border: 1px solid #444;
       font-weight: bold;
-      margin: 4px 0;
+      text-align: center;
+      color: #777;
+      background: #222; /* unknown: page not connected to the ESP32 */
     }
-    .active   { color: #4f4; }
-    .inactive { color: #666; }
+    .sensor-tile.offline {   /* no data from the radar: a real fault */
+      color: #ff6b6b;
+      background: #3a1010;
+      border-color: #a33;
+    }
+    .sensor-tile.idle {      /* connected, nobody there: armed / standing by */
+      color: #2f8f4a;
+      background: #071a0d;
+      border-color: #1f5f31;
+    }
+    .sensor-tile.stationary, /* someone is there, not moving */
+    .sensor-tile.moving {     /* someone is there and moving: blinks */
+      color: #000;
+      background: #33ff66;
+      border-color: #33ff66;
+      box-shadow: 0 0 12px #33ff66;
+    }
+    .sensor-tile.moving {
+      animation: blink 0.6s steps(1) infinite;
+    }
+    @keyframes blink {
+      50% {
+        color: #2f8f4a;
+        background: #071a0d;
+        border-color: #1f5f31;
+        box-shadow: none;
+      }
+    }
+
     pre {
-      margin: 6px 0 0;
-      font-size: 13px;
+      margin: 8px 0 0;
+      font-size: 11px;
       line-height: 1.3;
+      overflow-x: auto;
     }
   </style>
 </head>
 <body>
   <div id="status-panel">
     <h1>Freddy Radar <span id="connection-status">connecting…</span></h1>
-    <div id="sensor-lights"></div>
-    <div id="radar-cards"></div>
+    <div id="sensor-columns"></div>
   </div>
   <canvas id="radar-canvas"></canvas>
 
@@ -85,49 +105,68 @@
     // ---------- Status panel ----------
 
     const GATE_SIZE_METERS = 0.75;
-    const ENERGY_BAR_LENGTH = 20; // energy 0..100 -> 0..20 '#' characters
+    const ENERGY_BAR_LENGTH = 8; // energy 0..100 -> 0..8 '#' characters (fits half a phone screen)
 
     function energyBar(energy) {
       const filled = Math.round(energy / (100 / ENERGY_BAR_LENGTH));
       return '#'.repeat(filled).padEnd(ENERGY_BAR_LENGTH, '.');
     }
 
-    function renderSensorLights(radars) {
-      document.getElementById('sensor-lights').innerHTML = radars.map(radar => {
-        const state = radar.online ? 'connected' : 'disconnected';
-        return `<span><i class="sensor-light ${state}"></i>R${radar.id}</span>`;
-      }).join('');
+    // offline (no UART data), moving, stationary, or idle (connected, nobody there).
+    // OUT pin high also counts as presence, as a backup to the UART data.
+    function sensorState(radar) {
+      if (!radar.online) return 'offline';
+      if (radar.moving) return 'moving';
+      if (radar.presence || radar.out) return 'stationary';
+      return 'idle';
     }
 
     function renderGateTable(radar) {
-      let table = 'gate  dist  moving               stationary\n';
+      let table = 'dist moving   stationary\n';
       for (let gate = 0; gate < radar.mGates.length; gate++) {
         const distance = (gate * GATE_SIZE_METERS).toFixed(2);
-        table += `${gate}   ${distance}m ${energyBar(radar.mGates[gate])} ${energyBar(radar.sGates[gate])}\n`;
+        table += `${distance} ${energyBar(radar.mGates[gate])} ${energyBar(radar.sGates[gate])}\n`;
       }
       return table;
     }
 
-    function renderRadarCard(radar) {
-      if (!radar.online) {
-        return `<div class="radar-card">R${radar.id} <span class="inactive">offline</span> · OUT=${+radar.out}</div>`;
-      }
-      const presenceClass = radar.presence ? 'active' : 'inactive';
-      const presenceText = radar.presence ? 'PRESENT' : 'empty';
-      const movingText = radar.moving ? `${radar.mDist}cm  e${radar.mSig}` : '-';
-      const stationaryText = radar.stationary ? `${radar.sDist}cm  e${radar.sSig}` : '-';
+    function renderDetails(radar) {
+      if (!radar.online) return `<pre>OUT pin    ${+radar.out}</pre>`;
+      const movingText = radar.moving ? `${radar.mDist}cm e${radar.mSig}` : '-';
+      const stationaryText = radar.stationary ? `${radar.sDist}cm e${radar.sSig}` : '-';
       const gateTable = radar.mGates.length ? renderGateTable(radar) : '';
-      return `<div class="radar-card">R${radar.id}
-<div class="presence ${presenceClass}">${presenceText}</div>
-<pre>moving     ${movingText}
+      return `<pre>moving     ${movingText}
 stationary ${stationaryText}
 OUT pin    ${+radar.out}
-${gateTable}</pre></div>`;
+
+${gateTable}</pre>`;
     }
 
+    // Columns are built once and then updated in place: re-creating the tiles
+    // every message would restart the blink animation before it is ever visible.
+    function buildSensorColumns(radars) {
+      document.getElementById('sensor-columns').innerHTML = radars.map(radar => `
+        <div class="sensor-column">
+          <div class="sensor-tile" id="sensor-tile-${radar.id}">R${radar.id}</div>
+          <div id="sensor-details-${radar.id}"></div>
+        </div>`).join('');
+    }
+
+    function updateSensorColumn(radar) {
+      const tile = document.getElementById(`sensor-tile-${radar.id}`);
+      const tileClass = `sensor-tile ${sensorState(radar)}`;
+      if (tile.className !== tileClass) tile.className = tileClass;
+      document.getElementById(`sensor-details-${radar.id}`).innerHTML = renderDetails(radar);
+    }
+
+    let latestStatus = null; // last message from the ESP32, also used by the radar view
+
     function renderStatus(status) {
-      renderSensorLights(status.radars);
-      document.getElementById('radar-cards').innerHTML = status.radars.map(renderRadarCard).join('');
+      latestStatus = status;
+      if (document.querySelectorAll('.sensor-column').length !== status.radars.length) {
+        buildSensorColumns(status.radars);
+      }
+      status.radars.forEach(updateSensorColumn);
     }
 
     // ---------- WebSocket connection to the ESP32 ----------
@@ -136,7 +175,7 @@ ${gateTable}</pre></div>`;
 
     function connect() {
       const connectionStatus = document.getElementById('connection-status');
-      const socket = new WebSsocket(`ws://${location.host}/ws`);
+      const socket = new WebSocket(`ws://${location.host}/ws`);
 
       socket.onopen = () => {
         connectionStatus.textContent = 'live';
@@ -146,62 +185,211 @@ ${gateTable}</pre></div>`;
       };
       socket.onclose = () => {
         connectionStatus.textContent = 'reconnecting…';
-        // Sensor state is unknown while disconnected: show lights as gray.
-        document.querySelectorAll('.sensor-light').forEach(light => light.className = 'sensor-light');
+        // Sensor state is unknown while disconnected: show tiles as gray.
+        document.querySelectorAll('.sensor-tile').forEach(tile => tile.className = 'sensor-tile');
+        latestStatus = null; // stop adding new targets
         setTimeout(connect, RECONNECT_DELAY_MS);
       };
     }
     connect();
 
-    // ---------- Radar view ----------
+    // ---------- Radar view: old-style sweep scope ----------
 
     // Angles are compass-style: 0deg = up, clockwise.
-    const FIELD_OF_VIEW_FROM_DEG = 245;
-    const FIELD_OF_VIEW_TO_DEG = 115;
+    // Each radar covers a 120deg section; the sections overlap between 355 and 5.
+    // Each section has its own ray sweeping outer edge -> inner edge -> back; the two rays
+    // move in sync and meet in the overlap. Solid border = outer edge, dashed = inner edge.
+    // A target is always drawn on its section's detection angle (the radar has no angle info).
+    const RADAR_SECTIONS = [
+      { outerDeg: 245, innerDeg: 5,   detectionDeg: 305 }, // radar 0 (left)
+      { outerDeg: 115, innerDeg: 355, detectionDeg: 55  }, // radar 1 (right)
+    ];
+
+    const SWEEP_PERIOD_MS = 1600; // one pass outer -> inner (or back)
+    const SWEEP_TRAIL_DEG = 30;   // fading glow behind each ray
+
+    const RANGE_RINGS = 5;
+    const DISTANCE_STEPS = 10;    // targets snap to 10 distances
+    const MAX_RANGE_CM = 9 * 75;  // 9 gates x 0.75 m = edge of the scope
+    const BLIP_MIN_RADIUS_PX = 4;  // signal 0
+    const BLIP_MAX_RADIUS_PX = 12; // signal 100
+    const BLIP_FADE_MS = SWEEP_PERIOD_MS; // fades over one pass
+
+    const SCOPE_GREEN = '51, 255, 102'; // r, g, b — combined with alpha below
     const CIRCLE_MARGIN_PX = 10;
+
+    function green(alpha) {
+      return `rgba(${SCOPE_GREEN}, ${alpha})`;
+    }
 
     // Canvas measures angles from the right (east); compass measures from the top.
     function compassToCanvasRadians(degrees) {
       return (degrees - 90) * Math.PI / 180;
     }
 
-    function drawRadar() {
-      const canvas = document.getElementById('radar-canvas');
+    // Signed shortest turn between compass angles: -180..180, positive = clockwise.
+    function turnDeg(fromDeg, toDeg) {
+      return ((toDeg - fromDeg + 540) % 360) - 180;
+    }
+
+    // A ray's position is its "travel": 0 = section's outer edge, 1 = inner edge.
+    function rayAngleDeg(section, travel) {
+      return section.outerDeg + turnDeg(section.outerDeg, section.innerDeg) * travel;
+    }
+
+    function travelAt(section, compassDeg) {
+      return turnDeg(section.outerDeg, compassDeg) / turnDeg(section.outerDeg, section.innerDeg);
+    }
+
+    // 1..DISTANCE_STEPS, where DISTANCE_STEPS is the edge of the scope.
+    function distanceStep(distanceCm) {
+      const step = Math.ceil(distanceCm / MAX_RANGE_CM * DISTANCE_STEPS);
+      return Math.min(Math.max(step, 1), DISTANCE_STEPS);
+    }
+
+    // ---- Targets ("blips"): added when the ray crosses a detecting sensor's angle ----
+
+    const blips = []; // { angleDeg, step, radiusPx, bornMs }
+
+    function addBlipsCrossed(previousTravel, travel, now) {
+      if (!latestStatus) return;
+      RADAR_SECTIONS.forEach((section, radarId) => {
+        const detectionTravel = travelAt(section, section.detectionDeg);
+        const rayCrossed = Math.min(previousTravel, travel) < detectionTravel &&
+                           detectionTravel <= Math.max(previousTravel, travel); // either direction
+        const radar = latestStatus.radars.find(r => r.id === radarId);
+        if (!rayCrossed || !radar || !radar.online || !radar.presence) return;
+
+        // Same marker for moving and stationary targets.
+        const distanceCm = radar.moving ? radar.mDist : radar.sDist;
+        const signal = Math.min(radar.moving ? radar.mSig : radar.sSig, 100);
+        blips.push({
+          angleDeg: section.detectionDeg,
+          step: distanceStep(distanceCm),
+          radiusPx: BLIP_MIN_RADIUS_PX + (BLIP_MAX_RADIUS_PX - BLIP_MIN_RADIUS_PX) * signal / 100,
+          bornMs: now,
+        });
+      });
+    }
+
+    // ---- Drawing ----
+
+    function drawLineFromCenter(context, scope, compassDeg) {
+      const angle = compassToCanvasRadians(compassDeg);
+      context.beginPath();
+      context.moveTo(scope.centerX, scope.centerY);
+      context.lineTo(scope.centerX + Math.cos(angle) * scope.radius,
+                     scope.centerY + Math.sin(angle) * scope.radius);
+      context.stroke();
+    }
+
+    function drawGrid(context, scope) {
+      context.lineWidth = 1;
+      for (let ring = 1; ring <= RANGE_RINGS; ring++) {
+        context.beginPath();
+        context.arc(scope.centerX, scope.centerY, scope.radius * ring / RANGE_RINGS, 0, 2 * Math.PI);
+        context.strokeStyle = green(ring === RANGE_RINGS ? 0.6 : 0.25);
+        context.stroke();
+      }
+
+      context.strokeStyle = green(0.6);
+      RADAR_SECTIONS.forEach(section => drawLineFromCenter(context, scope, section.outerDeg));
+      context.setLineDash([6, 6]);
+      RADAR_SECTIONS.forEach(section => drawLineFromCenter(context, scope, section.innerDeg));
+      context.setLineDash([]);
+    }
+
+    // direction: +1 = moving toward the inner edge, -1 = moving back out.
+    function drawSweep(context, scope, section, travel, direction) {
+      // Trail: 1-degree wedges behind the ray, dimmer further back, kept inside the section.
+      const spanDeg = Math.abs(turnDeg(section.outerDeg, section.innerDeg));
+      const travelledDeg = travel * spanDeg;
+      const clampToSpan = deg => Math.min(Math.max(deg, 0), spanDeg);
+      for (let step = 0; step < SWEEP_TRAIL_DEG; step++) {
+        const nearDeg = rayAngleDeg(section, clampToSpan(travelledDeg - direction * step) / spanDeg);
+        const farDeg = rayAngleDeg(section, clampToSpan(travelledDeg - direction * (step + 1)) / spanDeg);
+        const wedgeDeg = turnDeg(nearDeg, farDeg);
+        if (wedgeDeg === 0) break; // trail reached the edge of the section
+        const startDeg = wedgeDeg > 0 ? nearDeg : farDeg; // canvas arcs go clockwise
+        context.beginPath();
+        context.moveTo(scope.centerX, scope.centerY);
+        context.arc(scope.centerX, scope.centerY, scope.radius,
+          compassToCanvasRadians(startDeg),
+          compassToCanvasRadians(startDeg + Math.abs(wedgeDeg)));
+        context.closePath();
+        context.fillStyle = green(0.35 * (1 - step / SWEEP_TRAIL_DEG));
+        context.fill();
+      }
+
+      // Ray
+      context.strokeStyle = green(1);
+      context.lineWidth = 2;
+      drawLineFromCenter(context, scope, rayAngleDeg(section, travel));
+    }
+
+    function drawBlips(context, scope, now) {
+      // Drop faded blips
+      while (blips.length && now - blips[0].bornMs > BLIP_FADE_MS) blips.shift();
+
+      blips.forEach(blip => {
+        const fade = 1 - (now - blip.bornMs) / BLIP_FADE_MS; // 1 = fresh, 0 = gone
+        const angle = compassToCanvasRadians(blip.angleDeg);
+        const distance = scope.radius * blip.step / DISTANCE_STEPS;
+        context.beginPath();
+        context.arc(scope.centerX + Math.cos(angle) * distance,
+                    scope.centerY + Math.sin(angle) * distance,
+                    blip.radiusPx, 0, 2 * Math.PI);
+        context.fillStyle = green(fade);
+        context.shadowColor = green(fade);
+        context.shadowBlur = 12; // phosphor glow
+        context.fill();
+        context.shadowBlur = 0;
+      });
+    }
+
+    const canvas = document.getElementById('radar-canvas');
+    const context = canvas.getContext('2d');
+
+    function drawScope(travel, direction, now) {
+      // Match the canvas to its on-screen size at device resolution (sharp on high-DPI phones).
       const pixelRatio = window.devicePixelRatio || 1;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
+      if (canvas.width !== width * pixelRatio || canvas.height !== height * pixelRatio) {
+        canvas.width = width * pixelRatio;
+        canvas.height = height * pixelRatio;
+      }
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, width, height);
 
-      // Render at device resolution so lines stay sharp on high-DPI phones.
-      canvas.width = width * pixelRatio;
-      canvas.height = height * pixelRatio;
-      const context = canvas.getContext('2d');
-      context.scale(pixelRatio, pixelRatio);
-
-      const centerX = width / 2;
-      const centerY = height / 2;
-      const radius = Math.min(width, height) / 2 - CIRCLE_MARGIN_PX;
-
-      // Field-of-view sector
-      context.beginPath();
-      context.moveTo(centerX, centerY);
-      context.arc(centerX, centerY, radius,
-        compassToCanvasRadians(FIELD_OF_VIEW_FROM_DEG),
-        compassToCanvasRadians(FIELD_OF_VIEW_TO_DEG));
-      context.closePath();
-      context.fillStyle = 'rgba(68, 255, 68, 0.15)';
-      context.fill();
-      context.strokeStyle = '#4f4';
-      context.lineWidth = 1;
-      context.stroke();
-
-      // Outer circle
-      context.beginPath();
-      context.arc(centerX, centerY, radius, 0, 2 * Math.PI);
-      context.strokeStyle = '#555';
-      context.stroke();
+      const scope = {
+        centerX: width / 2,
+        centerY: height / 2,
+        radius: Math.min(width, height) / 2 - CIRCLE_MARGIN_PX,
+      };
+      drawGrid(context, scope);
+      RADAR_SECTIONS.forEach(section => drawSweep(context, scope, section, travel, direction));
+      drawBlips(context, scope, now);
     }
-    window.addEventListener('resize', drawRadar);
-    drawRadar();
+
+    // ---- Animation loop ----
+
+    const sweepStartMs = performance.now();
+    let previousTravel = -1;
+
+    function animate(now) {
+      // phase 0..1 = rays moving in (outer -> inner), 1..2 = moving back out.
+      const phase = ((now - sweepStartMs) % (2 * SWEEP_PERIOD_MS)) / SWEEP_PERIOD_MS;
+      const direction = phase < 1 ? 1 : -1;
+      const travel = phase < 1 ? phase : 2 - phase;
+      addBlipsCrossed(previousTravel, travel, now);
+      previousTravel = travel;
+
+      drawScope(travel, direction, now);
+      requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
   </script>
 </body>
 </html>
