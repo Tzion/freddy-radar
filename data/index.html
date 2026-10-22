@@ -172,25 +172,46 @@ ${gateTable}</pre>`;
     // ---------- WebSocket connection to the ESP32 ----------
 
     const RECONNECT_DELAY_MS = 1000;
+    // The ESP32 pushes every 100 ms. If nothing arrives for this long, treat it as gone:
+    // the browser's own close event can take a minute when the board just loses power.
+    const STALE_AFTER_MS = 1500;
+    const STALE_CHECK_MS = 250;
+
+    const connectionStatus = document.getElementById('connection-status');
+    let socket = null;
+    let lastMessageMs = 0;
 
     function connect() {
-      const connectionStatus = document.getElementById('connection-status');
-      const socket = new WebSocket(`ws://${location.host}/ws`);
+      socket = new WebSocket(`ws://${location.host}/ws`);
+      lastMessageMs = Date.now(); // gives a new connection STALE_AFTER_MS to deliver data
 
       socket.onopen = () => {
         connectionStatus.textContent = 'live';
       };
       socket.onmessage = (event) => {
+        lastMessageMs = Date.now();
         renderStatus(JSON.parse(event.data));
       };
-      socket.onclose = () => {
-        connectionStatus.textContent = 'reconnecting…';
-        // Sensor state is unknown while disconnected: show tiles as gray.
-        document.querySelectorAll('.sensor-tile').forEach(tile => tile.className = 'sensor-tile');
-        latestStatus = null; // stop adding new targets
-        setTimeout(connect, RECONNECT_DELAY_MS);
-      };
+      socket.onclose = dropConnection;
     }
+
+    function dropConnection() {
+      // Detach the old socket so its late events can't trigger a second reconnect.
+      socket.onopen = socket.onmessage = socket.onclose = null;
+      socket.close();
+      socket = null;
+
+      connectionStatus.textContent = 'reconnecting…';
+      // Sensor state is unknown while disconnected: show tiles as gray.
+      document.querySelectorAll('.sensor-tile').forEach(tile => tile.className = 'sensor-tile');
+      latestStatus = null; // stop adding new targets
+      setTimeout(connect, RECONNECT_DELAY_MS);
+    }
+
+    setInterval(() => {
+      if (socket && Date.now() - lastMessageMs > STALE_AFTER_MS) dropConnection();
+    }, STALE_CHECK_MS);
+
     connect();
 
     // ---------- Radar view: old-style sweep scope ----------

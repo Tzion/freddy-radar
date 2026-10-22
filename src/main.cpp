@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
+#include <esp_netif.h>
+#include <dhcpserver/dhcpserver.h>
 #include <stdarg.h>
 #include "radar.h"
 
@@ -12,6 +14,8 @@ static const char *AP_PASS = "midbarXpress";
 static const uint32_t RADAR_BAUD = 256000;
 static const uint32_t WS_PERIOD_MS = 100;  // push to browser at 10 Hz
 static const uint32_t LOG_PERIOD_MS = 500; // USB serial log at 2 Hz
+static const uint32_t LED_SLOW_BLINK_MS = 500; // half-period: a radar is not connected
+static const uint32_t LED_FAST_BLINK_MS = 100; // half-period: a radar detects someone
 
 // Add radars here ({uart, OUT pin}) and start their UART in setup().
 // S2 has 2 hardware UARTs: Serial0 and Serial1.
@@ -79,13 +83,40 @@ static void logStatus() {
   }
 }
 
+// Don't advertise the ESP32 as gateway/router in DHCP. Phones then keep mobile
+// data for internet and reach 192.168.4.x over WiFi (iOS otherwise routes around it).
+static void disableApGateway() {
+  esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  dhcps_offer_t offer = 0; // clear OFFER_ROUTER
+  esp_netif_dhcps_stop(ap);
+  if (esp_netif_dhcps_option(ap, ESP_NETIF_OP_SET, ESP_NETIF_ROUTER_SOLICITATION_ADDRESS, &offer, sizeof(offer)) != ESP_OK)
+    Serial.println("DHCP: failed to disable gateway offer");
+  esp_netif_dhcps_start(ap);
+}
+
+// Onboard LED: fast blink = any radar detects, slow blink = a radar is offline, steady = all connected.
+static void updateLed(uint32_t now) {
+  bool anyDetecting = false, allOnline = true;
+  for (Radar &r : radars) {
+    bool online = r.online();
+    allOnline &= online;
+    anyDetecting |= online && (r.dev.presenceDetected() || r.out());
+  }
+  bool ledOn = anyDetecting ? (now / LED_FAST_BLINK_MS) % 2
+             : !allOnline   ? (now / LED_SLOW_BLINK_MS) % 2
+                            : true;
+  digitalWrite(LED_BUILTIN, ledOn);
+}
+
 void setup() {
   Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
   while (!Serial && millis() < 1500) delay(10); // let USB CDC enumerate if a host is attached
 
   // WiFi first: radar begin() can block for seconds if a sensor is missing.
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
+  disableApGateway();
   Serial.printf("AP %s  http://%s/\n", AP_SSID, WiFi.softAPIP().toString().c_str());
 
   if (!LittleFS.begin()) Serial.println("LittleFS mount failed - run: pio run -t uploadfs");
@@ -118,6 +149,8 @@ void loop() {
     ws.cleanupClients();
     logStatus();
   }
+
+  updateLed(now);
 
   delay(1); // let the idle task run; UART buffer holds ~10ms of radar data
 }
