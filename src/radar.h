@@ -8,12 +8,15 @@ struct Radar {
 
   int outPin;
   MyLD2410 dev;
+  String firmware; // read once at begin(); empty if the radar didn't answer
 
   Radar(Stream &uart, int outPin) : outPin(outPin), dev(uart) {}
 
   void begin() {
     pinMode(outPin, INPUT_PULLDOWN); // reads 0 if no radar is wired
-    if (dev.begin()) dev.enhancedMode(true); // per-gate energies
+    if (!dev.begin()) return;
+    if (dev.requestFirmware()) firmware = dev.getFirmware();
+    dev.enhancedMode(true); // per-gate energies
   }
 
   void poll() {

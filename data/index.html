@@ -67,22 +67,20 @@
       background: #071a0d;
       border-color: #1f5f31;
     }
-    .sensor-tile.stationary, /* someone is there, not moving */
-    .sensor-tile.moving {     /* someone is there and moving: blinks */
+    .sensor-tile.stationary, /* someone is there, not moving: bright green */
+    .sensor-tile.moving {     /* someone is there and moving: bright green + blinking stroke */
       color: #000;
       background: #33ff66;
       border-color: #33ff66;
       box-shadow: 0 0 12px #33ff66;
     }
     .sensor-tile.moving {
-      animation: blink 0.6s steps(1) infinite;
+      animation: stroke-blink 0.15s steps(1) infinite;
     }
-    @keyframes blink {
+    @keyframes stroke-blink {
       50% {
-        color: #2f8f4a;
-        background: #071a0d;
-        border-color: #1f5f31;
-        box-shadow: none;
+        border-color: #ccffd9;
+        box-shadow: 0 0 0 3px #ccffd9, 0 0 18px #ccffd9;
       }
     }
 
@@ -131,15 +129,25 @@
     }
 
     function renderDetails(radar) {
-      if (!radar.online) return `<pre>OUT pin    ${+radar.out}</pre>`;
+      const firmwareText = radar.fw || 'unknown (reset board after connecting radar)';
+      if (!radar.online) return `<pre>OUT pin    ${+radar.out}
+firmware   ${firmwareText}</pre>`;
       const movingText = radar.moving ? `${radar.mDist}cm e${radar.mSig}` : '-';
       const stationaryText = radar.stationary ? `${radar.sDist}cm e${radar.sSig}` : '-';
       const gateTable = radar.mGates.length ? renderGateTable(radar) : '';
       return `<pre>moving     ${movingText}
 stationary ${stationaryText}
 OUT pin    ${+radar.out}
+firmware   ${firmwareText}
 
 ${gateTable}</pre>`;
+    }
+
+    const RADAR_NAMES = ['Left Radar', 'Right Radar']; // indexed by radar id
+
+    function radarTitle(radar) {
+      const name = RADAR_NAMES[radar.id] || 'Radar';
+      return `${name} (R${radar.id})`;
     }
 
     // Columns are built once and then updated in place: re-creating the tiles
@@ -147,7 +155,7 @@ ${gateTable}</pre>`;
     function buildSensorColumns(radars) {
       document.getElementById('sensor-columns').innerHTML = radars.map(radar => `
         <div class="sensor-column">
-          <div class="sensor-tile" id="sensor-tile-${radar.id}">R${radar.id}</div>
+          <div class="sensor-tile" id="sensor-tile-${radar.id}">${radarTitle(radar)}</div>
           <div id="sensor-details-${radar.id}"></div>
         </div>`).join('');
     }

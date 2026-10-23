@@ -52,8 +52,9 @@ static void buildJson() {
   add("{\"radars\":[");
   for (size_t i = 0; i < NUM_RADARS; i++) {
     Radar &r = radars[i];
+    //! what the fuck is d? use better name
     MyLD2410 &d = r.dev;
-    add("%s{\"id\":%u,\"out\":%d", i ? "," : "", (unsigned)i, r.out());
+    add("%s{\"id\":%u,\"out\":%d,\"fw\":\"%s\"", i ? "," : "", (unsigned)i, r.out(), r.firmware.c_str());
     if (!r.online()) {
       add(",\"online\":0}");
       continue;
