@@ -28,8 +28,8 @@ static const size_t NUM_RADARS = sizeof(radars) / sizeof(radars[0]);
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 
-// Worst case per radar is ~230 bytes (flags, distances, 2x9 gate energies).
-static char json[320 * NUM_RADARS];
+// Worst case per radar is ~380 bytes (flags, settings, distances, 2x9 energies, 2x9 thresholds).
+static char json[512 * NUM_RADARS];
 static size_t jsonLen;
 
 static void add(const char *fmt, ...) {
@@ -47,24 +47,33 @@ static void addGates(const char *key, const MyLD2410::ValuesArray &v, bool valid
   add("]");
 }
 
+static void addBytes(const char *key, const byte *values, byte count) {
+  add(",\"%s\":[", key);
+  for (byte i = 0; i < count; i++) add("%s%u", i ? "," : "", values[i]);
+  add("]");
+}
+
 static void buildJson() {
   jsonLen = 0;
   add("{\"radars\":[");
   for (size_t i = 0; i < NUM_RADARS; i++) {
     Radar &r = radars[i];
-    //! what the fuck is d? use better name
-    MyLD2410 &d = r.dev;
-    add("%s{\"id\":%u,\"out\":%d,\"fw\":\"%s\"", i ? "," : "", (unsigned)i, r.out(), r.firmware.c_str());
+    MyLD2410 &sensor = r.dev;
+    add("%s{\"id\":%u,\"out\":%d,\"fw\":\"%s\",\"hold\":%u,\"res\":%u", i ? "," : "", (unsigned)i, r.out(),
+        r.firmware.c_str(), r.holdSeconds, r.resolutionCm);
+    add(",\"auto\":%d", r.autoRunning);
+    addBytes("mTh", r.movingThresholds, r.thresholdCount);
+    addBytes("sTh", r.stationaryThresholds, r.thresholdCount);
     if (!r.online()) {
       add(",\"online\":0}");
       continue;
     }
     add(",\"online\":1,\"presence\":%d,\"moving\":%d,\"mDist\":%lu,\"mSig\":%u"
         ",\"stationary\":%d,\"sDist\":%lu,\"sSig\":%u",
-        d.presenceDetected(), d.movingTargetDetected(), d.movingTargetDistance(), d.movingTargetSignal(),
-        d.stationaryTargetDetected(), d.stationaryTargetDistance(), d.stationaryTargetSignal());
-    addGates("mGates", d.getMovingSignals(), d.inEnhancedMode());
-    addGates("sGates", d.getStationarySignals(), d.inEnhancedMode());
+        sensor.presenceDetected(), sensor.movingTargetDetected(), sensor.movingTargetDistance(), sensor.movingTargetSignal(),
+        sensor.stationaryTargetDetected(), sensor.stationaryTargetDistance(), sensor.stationaryTargetSignal());
+    addGates("mGates", sensor.getMovingSignals(), sensor.inEnhancedMode());
+    addGates("sGates", sensor.getStationarySignals(), sensor.inEnhancedMode());
     add("}");
   }
   add("]}");
@@ -73,14 +82,15 @@ static void buildJson() {
 static void logStatus() {
   for (size_t i = 0; i < NUM_RADARS; i++) {
     Radar &r = radars[i];
-    MyLD2410 &d = r.dev;
+    MyLD2410 &sensor = r.dev;
     if (!r.online()) {
       Serial.printf("[R%u] offline  OUT=%d\n", (unsigned)i, r.out());
       continue;
     }
-    Serial.printf("[R%u] %-22s OUT=%d  mov %4lucm e%3u  sta %4lucm e%3u\n", (unsigned)i, d.statusString(), r.out(),
-                  d.movingTargetDistance(), d.movingTargetSignal(), d.stationaryTargetDistance(),
-                  d.stationaryTargetSignal());
+    Serial.printf("[R%u] %s %-22s OUT=%d  mov %4lucm e%3u  sta %4lucm e%3u\n", (unsigned)i,
+                  sensor.inEnhancedMode() ? "enh  " : "basic", sensor.statusString(), r.out(),
+                  sensor.movingTargetDistance(), sensor.movingTargetSignal(), sensor.stationaryTargetDistance(),
+                  sensor.stationaryTargetSignal());
   }
 }
 
@@ -122,6 +132,27 @@ void setup() {
 
   if (!LittleFS.begin()) Serial.println("LittleFS mount failed - run: pio run -t uploadfs");
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  // POST /api/config?radar=0& one of:
+  //   hold=10 | res=20 (reboots the radar) | gate=3&moving=40 | gate=3&stationary=30 | auto=10 (s to leave)
+  server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *req) {
+    int id = req->hasParam("radar") ? req->getParam("radar")->value().toInt() : -1;
+    if (id < 0 || id >= (int)NUM_RADARS) {
+      req->send(400, "text/plain", "bad radar");
+      return;
+    }
+    Radar &r = radars[id];
+    if (req->hasParam("hold")) r.requestedHold = constrain(req->getParam("hold")->value().toInt(), 0, 255);
+    if (req->hasParam("res")) r.requestedResolutionCm = req->getParam("res")->value().toInt() == 20 ? 20 : 75;
+    if (req->hasParam("auto")) r.requestedAutoDelay = constrain(req->getParam("auto")->value().toInt(), 1, 255);
+    int gate = req->hasParam("gate") ? req->getParam("gate")->value().toInt() : -1;
+    if (gate >= 0 && gate < Radar::GATES) {
+      if (req->hasParam("moving"))
+        r.requestedMovingThreshold[gate] = constrain(req->getParam("moving")->value().toInt(), 0, 100);
+      if (req->hasParam("stationary"))
+        r.requestedStationaryThreshold[gate] = constrain(req->getParam("stationary")->value().toInt(), 0, 100);
+    }
+    req->send(202);
+  });
   server.addHandler(&ws);
   server.begin();
 
@@ -131,7 +162,10 @@ void setup() {
 }
 
 void loop() {
-  for (Radar &r : radars) r.poll();
+  for (Radar &r : radars) {
+    r.applyRequests();
+    r.poll();
+  }
 
   uint32_t now = millis();
 

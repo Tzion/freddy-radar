@@ -84,6 +84,149 @@
       }
     }
 
+    /* Per-radar settings */
+    .settings {
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    .settings input[type=range] {
+      width: 100%;
+      accent-color: #33ff66;
+    }
+    .settings :disabled {
+      opacity: 0.4;
+    }
+
+    /* Zone size: segmented choice + reboot button, one line */
+    .zone-label {
+      margin-top: 6px;
+    }
+    .zone {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 2px;
+      white-space: nowrap;
+    }
+    .zone button {
+      font: inherit;
+      font-size: 11px;
+      padding: 3px 5px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      color: #777;
+      background: none;
+    }
+    .zone .option.applied {   /* on the radar now, and chosen */
+      color: #000;
+      background: #33ff66;
+      border-color: #33ff66;
+    }
+    .zone .option.current {   /* on the radar now, but another option is chosen */
+      color: #33ff66;
+      border-color: #1f5f31;
+    }
+    .zone .option.pending {   /* chosen, needs a reboot to apply */
+      color: #ffb020;
+      border: 1px dashed #ffb020;
+    }
+    .zone .reboot:not(:disabled) {
+      color: #000;
+      background: #ffb020;
+      border-color: #ffb020;
+    }
+
+    /* Per-gate meters: energy fill + draggable threshold (line with a circle) */
+    .gates {
+      margin-top: 8px;
+      font-size: 11px;
+    }
+    .gate-row {
+      display: grid;
+      grid-template-columns: 30px 1fr 1fr;
+      gap: 5px;
+      align-items: center;
+      height: 18px;
+    }
+    .gate-head {
+      color: #777;
+    }
+    .meter {
+      position: relative;
+      height: 12px;
+      background: #0b0b0b;
+      border: 1px solid #333;
+      border-radius: 3px;
+      touch-action: pan-y; /* vertical swipes still scroll the panel; horizontal drags move the threshold */
+      cursor: ew-resize;
+    }
+    .meter .energy {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      background: #1f5f31;     /* below threshold: dim */
+    }
+    .meter.over .energy {
+      background: #33ff66;     /* above threshold: pops */
+      box-shadow: 0 0 6px #33ff66;
+    }
+    .meter .threshold {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      margin-left: -1px;
+      background: #ffb020;
+    }
+    .meter .threshold::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin: -5px 0 0 -5px;
+      border-radius: 50%;
+      background: #ffb020;
+    }
+    .meter .threshold-value {
+      display: none;
+      position: absolute;
+      right: 2px;
+      top: -1px;
+      font-size: 10px;
+      color: #ffb020;
+    }
+    .meter.dragging .threshold-value {
+      display: block;
+    }
+    .meter.unknown .threshold {
+      display: none;
+    }
+    .meter.disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+    .auto-threshold {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .auto-threshold button {
+      font: inherit;
+      color: #000;
+      background: #ffb020;
+      border: 1px solid #ffb020;
+      border-radius: 6px;
+      padding: 3px 6px;
+    }
+    .auto-threshold button:disabled {
+      opacity: 0.4;
+    }
+
     pre {
       margin: 8px 0 0;
       font-size: 11px;
@@ -102,14 +245,7 @@
   <script>
     // ---------- Status panel ----------
 
-    const GATE_SIZE_METERS = 0.75;
-    const ENERGY_BAR_LENGTH = 8; // energy 0..100 -> 0..8 '#' characters (fits half a phone screen)
-
-    function energyBar(energy) {
-      const filled = Math.round(energy / (100 / ENERGY_BAR_LENGTH));
-      return '#'.repeat(filled).padEnd(ENERGY_BAR_LENGTH, '.');
-    }
-
+    const DEFAULT_GATE_SIZE_CM = 75; // used until the radar reports its resolution
     // offline (no UART data), moving, stationary, or idle (connected, nobody there).
     // OUT pin high also counts as presence, as a backup to the UART data.
     function sensorState(radar) {
@@ -119,28 +255,16 @@
       return 'idle';
     }
 
-    function renderGateTable(radar) {
-      let table = 'dist moving   stationary\n';
-      for (let gate = 0; gate < radar.mGates.length; gate++) {
-        const distance = (gate * GATE_SIZE_METERS).toFixed(2);
-        table += `${distance} ${energyBar(radar.mGates[gate])} ${energyBar(radar.sGates[gate])}\n`;
-      }
-      return table;
-    }
-
     function renderDetails(radar) {
       const firmwareText = radar.fw || 'unknown (reset board after connecting radar)';
       if (!radar.online) return `<pre>OUT pin    ${+radar.out}
 firmware   ${firmwareText}</pre>`;
       const movingText = radar.moving ? `${radar.mDist}cm e${radar.mSig}` : '-';
       const stationaryText = radar.stationary ? `${radar.sDist}cm e${radar.sSig}` : '-';
-      const gateTable = radar.mGates.length ? renderGateTable(radar) : '';
       return `<pre>moving     ${movingText}
 stationary ${stationaryText}
 OUT pin    ${+radar.out}
-firmware   ${firmwareText}
-
-${gateTable}</pre>`;
+firmware   ${firmwareText}</pre>`;
     }
 
     const RADAR_NAMES = ['Left Radar', 'Right Radar']; // indexed by radar id
@@ -150,14 +274,256 @@ ${gateTable}</pre>`;
       return `${name} (R${radar.id})`;
     }
 
+    // ---------- Per-radar settings (sent to the ESP32, which forwards them to the radar) ----------
+
+    const HOLD_MAX_SECONDS = 120;
+    // After the user moves the hold slider, don't overwrite it from the radar's status for a while:
+    // applying a setting takes a moment.
+    const HOLD_EDIT_GRACE_MS = 3000;
+    const REBOOT_TIMEOUT_MS = 15000; // give up waiting for the radar to report the new zone size
+
+    const ZONE_SIZES_CM = [75, 20]; // 9 zones each: 75 cm covers 6.75 m, 20 cm covers 1.8 m
+
+    // Per radar id
+    const lastHoldEditMs = {};
+    const appliedZoneCm = {};   // zone size the radar reports
+    const chosenZoneCm = {};    // zone size picked on the page but not applied yet (undefined = none)
+    const rebootStartedMs = {}; // set while waiting for the radar to come back
+
+    function settingsHtml(id) {
+      const options = ZONE_SIZES_CM.map(cm =>
+        `<button class="option" data-cm="${cm}" title="${cm} cm zones, range ${(9 * cm / 100).toFixed(2)} m">${cm}cm</button>`
+      ).join('');
+      return `
+        <div class="settings">
+          <label for="hold-${id}">hold time <span id="hold-value-${id}">-</span> s</label>
+          <input type="range" id="hold-${id}" min="0" max="${HOLD_MAX_SECONDS}" step="1">
+          <div class="zone-label">precision</div>
+          <div class="zone" id="zone-${id}">
+            ${options}
+            <button class="reboot" id="reboot-${id}" disabled>reboot</button>
+          </div>
+        </div>`;
+    }
+
+    function sendConfig(id, params) {
+      const query = new URLSearchParams({ radar: id, ...params });
+      fetch(`/api/config?${query}`, { method: 'POST' });
+    }
+
+    function attachSettingsHandlers(id) {
+      const holdSlider = document.getElementById(`hold-${id}`);
+      const holdValue = document.getElementById(`hold-value-${id}`);
+      holdSlider.addEventListener('input', () => {
+        lastHoldEditMs[id] = Date.now();
+        holdValue.textContent = holdSlider.value;
+      });
+      // Send on release only: each change makes the radar pause its data briefly.
+      holdSlider.addEventListener('change', () => {
+        lastHoldEditMs[id] = Date.now();
+        sendConfig(id, { hold: holdSlider.value });
+      });
+
+      document.querySelectorAll(`#zone-${id} .option`).forEach(option =>
+        option.addEventListener('click', () => {
+          if (rebootStartedMs[id]) return;
+          const cm = Number(option.dataset.cm);
+          chosenZoneCm[id] = cm === appliedZoneCm[id] ? undefined : cm; // picking the applied one cancels
+          renderZone(id);
+        }));
+      document.getElementById(`reboot-${id}`).addEventListener('click', () => {
+        if (chosenZoneCm[id] === undefined) return;
+        rebootStartedMs[id] = Date.now();
+        sendConfig(id, { res: chosenZoneCm[id] });
+        renderZone(id);
+      });
+    }
+
+    function renderZone(id) {
+      const chosen = chosenZoneCm[id] ?? appliedZoneCm[id];
+      document.querySelectorAll(`#zone-${id} .option`).forEach(option => {
+        const cm = Number(option.dataset.cm);
+        const isApplied = cm === appliedZoneCm[id];
+        const isChosen = cm === chosen;
+        option.className = 'option' + (isApplied && isChosen ? ' applied'
+                                     : isApplied             ? ' current'
+                                     : isChosen              ? ' pending' : '');
+      });
+      const reboot = document.getElementById(`reboot-${id}`);
+      reboot.textContent = rebootStartedMs[id] ? 'rebooting…' : 'reboot';
+      reboot.disabled = chosenZoneCm[id] === undefined || Boolean(rebootStartedMs[id]);
+    }
+
+    function updateSettings(radar) {
+      const id = radar.id;
+      document.getElementById(`hold-${id}`).disabled = !radar.online;
+      document.querySelectorAll(`#zone-${id} .option`).forEach(option => option.disabled = !radar.online);
+
+      if (Date.now() - (lastHoldEditMs[id] || 0) >= HOLD_EDIT_GRACE_MS && radar.hold !== undefined) {
+        document.getElementById(`hold-${id}`).value = radar.hold;
+        document.getElementById(`hold-value-${id}`).textContent = radar.hold;
+      }
+
+      if (radar.online && radar.res) appliedZoneCm[id] = radar.res;
+      if (rebootStartedMs[id]) {
+        const done = radar.online && radar.res === chosenZoneCm[id];
+        const timedOut = Date.now() - rebootStartedMs[id] > REBOOT_TIMEOUT_MS;
+        if (done || timedOut) {
+          rebootStartedMs[id] = 0;
+          chosenZoneCm[id] = undefined; // on timeout the old size shows as applied again
+        }
+      }
+      renderZone(id);
+    }
+
+    // ---------- Gate meters: energy per gate + draggable threshold ----------
+
+    const GATE_COUNT = 9;
+    const THRESHOLD_EDIT_GRACE_MS = 4000; // keep a dragged value until the radar reports it back
+    const AUTO_LEAVE_SECONDS = 5;         // time to leave the room before auto threshold scans
+    const AUTO_START_TIMEOUT_MS = 5000;   // radar should report "running" by then
+    const AUTO_RESULT_SHOW_MS = 3000;     // how long "done" / "failed" stays visible
+
+    const METER_KINDS = [
+      { kind: 'moving',     energies: 'mGates', thresholds: 'mTh' },
+      { kind: 'stationary', energies: 'sGates', thresholds: 'sTh' },
+    ];
+
+    const lastThresholdEditMs = {}; // meter id -> time of last drag
+    const autoRuns = {};            // radar id -> { startedMs, sawRunning, resultMs }
+
+    function gatesHtml(id) {
+      let rows = '';
+      for (let gate = 0; gate < GATE_COUNT; gate++) {
+        const meters = METER_KINDS.map(({ kind }) => `
+          <div class="meter unknown" id="meter-${id}-${kind}-${gate}" data-radar="${id}" data-kind="${kind}" data-gate="${gate}">
+            <div class="energy"></div><div class="threshold"></div><span class="threshold-value"></span>
+          </div>`).join('');
+        rows += `<div class="gate-row"><span id="gate-dist-${id}-${gate}"></span>${meters}</div>`;
+      }
+      return `
+        <div class="gates">
+          <div class="gate-row gate-head"><span>dist</span><span>moving</span><span>stationary</span></div>
+          ${rows}
+          <div class="auto-threshold">
+            <button id="auto-${id}">auto threshold</button>
+            <span id="auto-status-${id}"></span>
+          </div>
+        </div>`;
+    }
+
+    function thresholdAtPointer(meter, event) {
+      const box = meter.getBoundingClientRect();
+      const fraction = Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1);
+      return Math.round(fraction * 100);
+    }
+
+    function showThreshold(meter, value) {
+      meter.dataset.threshold = value;
+      meter.querySelector('.threshold').style.left = `${value}%`;
+      meter.querySelector('.threshold-value').textContent = value;
+    }
+
+    function attachGateHandlers(id) {
+      document.querySelectorAll(`.meter[data-radar="${id}"]`).forEach(meter => {
+        let valueBeforeDrag;
+        const dragTo = event => {
+          lastThresholdEditMs[meter.id] = Date.now();
+          showThreshold(meter, thresholdAtPointer(meter, event));
+        };
+        meter.addEventListener('pointerdown', event => {
+          if (meter.classList.contains('unknown') || meter.classList.contains('disabled')) return;
+          valueBeforeDrag = meter.dataset.threshold;
+          meter.setPointerCapture(event.pointerId);
+          meter.classList.add('dragging');
+          dragTo(event); // a tap sets the threshold where you tap
+        });
+        meter.addEventListener('pointermove', event => {
+          if (meter.classList.contains('dragging')) dragTo(event);
+        });
+        // Send on release only: each change makes the radar pause its data briefly.
+        meter.addEventListener('pointerup', () => {
+          if (!meter.classList.contains('dragging')) return;
+          meter.classList.remove('dragging');
+          lastThresholdEditMs[meter.id] = Date.now();
+          sendConfig(id, { gate: meter.dataset.gate, [meter.dataset.kind]: meter.dataset.threshold });
+        });
+        // The browser took over the touch (vertical scroll): undo, don't send.
+        meter.addEventListener('pointercancel', () => {
+          meter.classList.remove('dragging');
+          showThreshold(meter, valueBeforeDrag);
+          lastThresholdEditMs[meter.id] = 0;
+        });
+      });
+
+      document.getElementById(`auto-${id}`).addEventListener('click', () => {
+        autoRuns[id] = { startedMs: Date.now(), sawRunning: false, resultMs: 0 };
+        sendConfig(id, { auto: AUTO_LEAVE_SECONDS });
+      });
+    }
+
+    function updateGates(radar) {
+      const id = radar.id;
+      const gateCm = radar.res || DEFAULT_GATE_SIZE_CM;
+      for (let gate = 0; gate < GATE_COUNT; gate++) {
+        document.getElementById(`gate-dist-${id}-${gate}`).textContent = (gate * gateCm / 100).toFixed(2);
+        METER_KINDS.forEach(({ kind, energies, thresholds }) => {
+          const meter = document.getElementById(`meter-${id}-${kind}-${gate}`);
+          const energy = radar.online && radar[energies] ? radar[energies][gate] : undefined;
+          const threshold = radar[thresholds] ? radar[thresholds][gate] : undefined;
+
+          meter.querySelector('.energy').style.width = `${Math.min(energy ?? 0, 100)}%`;
+          meter.classList.toggle('unknown', threshold === undefined);
+          meter.classList.toggle('disabled', !radar.online || Boolean(radar.auto));
+
+          const editing = meter.classList.contains('dragging') ||
+                          Date.now() - (lastThresholdEditMs[meter.id] || 0) < THRESHOLD_EDIT_GRACE_MS;
+          if (threshold !== undefined && !editing) showThreshold(meter, threshold);
+          meter.classList.toggle('over', energy !== undefined && energy > Number(meter.dataset.threshold));
+        });
+      }
+      updateAutoThreshold(radar);
+    }
+
+    // Auto threshold: "leave the room… N" -> "scanning…" -> "done" (new thresholds move the handles).
+    function updateAutoThreshold(radar) {
+      const id = radar.id;
+      const run = autoRuns[id];
+      const running = Boolean(radar.auto);
+      let text = running ? 'scanning…' : '';
+
+      if (run) {
+        const elapsedMs = Date.now() - run.startedMs;
+        if (running) run.sawRunning = true;
+        const waitingToStart = !run.sawRunning && elapsedMs < AUTO_START_TIMEOUT_MS;
+        if (running || waitingToStart) {
+          const leaveMs = AUTO_LEAVE_SECONDS * 1000 - elapsedMs;
+          text = leaveMs > 0 ? `leave the room… ${Math.ceil(leaveMs / 1000)}` : 'scanning…';
+        } else {
+          run.resultMs ||= Date.now();
+          text = run.sawRunning ? 'done' : 'failed';
+          if (Date.now() - run.resultMs > AUTO_RESULT_SHOW_MS) delete autoRuns[id];
+        }
+      }
+
+      document.getElementById(`auto-status-${id}`).textContent = text;
+      document.getElementById(`auto-${id}`).disabled = !radar.online || running || Boolean(autoRuns[id]);
+    }
+
     // Columns are built once and then updated in place: re-creating the tiles
     // every message would restart the blink animation before it is ever visible.
     function buildSensorColumns(radars) {
       document.getElementById('sensor-columns').innerHTML = radars.map(radar => `
         <div class="sensor-column">
           <div class="sensor-tile" id="sensor-tile-${radar.id}">${radarTitle(radar)}</div>
+          ${settingsHtml(radar.id)}
           <div id="sensor-details-${radar.id}"></div>
+          ${gatesHtml(radar.id)}
         </div>`).join('');
+      radars.forEach(radar => {
+        attachSettingsHandlers(radar.id);
+        attachGateHandlers(radar.id);
+      });
     }
 
     function updateSensorColumn(radar) {
@@ -165,6 +531,8 @@ ${gateTable}</pre>`;
       const tileClass = `sensor-tile ${sensorState(radar)}`;
       if (tile.className !== tileClass) tile.className = tileClass;
       document.getElementById(`sensor-details-${radar.id}`).innerHTML = renderDetails(radar);
+      updateSettings(radar);
+      updateGates(radar);
     }
 
     let latestStatus = null; // last message from the ESP32, also used by the radar view
@@ -328,6 +696,52 @@ ${gateTable}</pre>`;
       context.setLineDash([]);
     }
 
+    const FINE_ZONE_CM = 20;
+    const FINE_RANGE_CM = 9 * FINE_ZONE_CM; // 1.8 m: the farthest a fine-zone radar can see
+
+    // Arc across a section only, at the given radius (path continues from the current point).
+    function sectionArc(context, scope, section, radius, reverse = false) {
+      const turn = turnDeg(section.outerDeg, section.innerDeg);
+      const fromDeg = reverse ? section.outerDeg + turn : section.outerDeg;
+      const toDeg = reverse ? section.outerDeg : section.outerDeg + turn;
+      // Clockwise when going toward a clockwise-opening section's inner edge, and vice versa.
+      context.arc(scope.centerX, scope.centerY, radius,
+        compassToCanvasRadians(fromDeg), compassToCanvasRadians(toDeg), (turn < 0) !== reverse);
+    }
+
+    // Radar set to fine (20 cm) zones: its section is only "live" up to 1.8 m.
+    // Beyond that it's grayed out, the limit is a bold line, and extra rings show the finer detail.
+    function drawFineZoneSection(context, scope, section) {
+      const limitRadius = scope.radius * FINE_RANGE_CM / MAX_RANGE_CM;
+
+      // Gray out limit -> outer edge (drawn over the sweep, so the sweep looks dimmed there)
+      context.beginPath();
+      sectionArc(context, scope, section, scope.radius);
+      sectionArc(context, scope, section, limitRadius, true);
+      context.closePath();
+      context.fillStyle = 'rgba(70, 70, 70, 0.6)';
+      context.fill();
+
+      // Middle lines halfway between the existing range rings, inside the limit only
+      const ringSpacingCm = MAX_RANGE_CM / RANGE_RINGS;
+      context.strokeStyle = green(0.5);
+      context.lineWidth = 1;
+      context.setLineDash([4, 4]);
+      for (let cm = ringSpacingCm / 2; cm < FINE_RANGE_CM; cm += ringSpacingCm) {
+        context.beginPath();
+        sectionArc(context, scope, section, scope.radius * cm / MAX_RANGE_CM);
+        context.stroke();
+      }
+      context.setLineDash([]);
+
+      // Bold limit line
+      context.beginPath();
+      sectionArc(context, scope, section, limitRadius);
+      context.strokeStyle = green(1);
+      context.lineWidth = 3;
+      context.stroke();
+    }
+
     // direction: +1 = moving toward the inner edge, -1 = moving back out.
     function drawSweep(context, scope, section, travel, direction) {
       // Trail: 1-degree wedges behind the ray, dimmer further back, kept inside the section.
@@ -399,6 +813,10 @@ ${gateTable}</pre>`;
       };
       drawGrid(context, scope);
       RADAR_SECTIONS.forEach(section => drawSweep(context, scope, section, travel, direction));
+      RADAR_SECTIONS.forEach((section, radarId) => {
+        const radar = latestStatus && latestStatus.radars.find(r => r.id === radarId);
+        if (radar && radar.res === FINE_ZONE_CM) drawFineZoneSection(context, scope, section);
+      });
       drawBlips(context, scope, now);
     }
 
