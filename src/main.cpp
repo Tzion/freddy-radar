@@ -17,11 +17,20 @@ static const uint32_t LOG_PERIOD_MS = 500; // USB serial log at 2 Hz
 static const uint32_t LED_SLOW_BLINK_MS = 500; // half-period: a radar is not connected
 static const uint32_t LED_FAST_BLINK_MS = 100; // half-period: a radar detects someone
 
-// Add radars here ({uart, OUT pin}) and start their UART in setup().
+// On/off button (momentary, to GND): single press = off, double press = on.
+static const int BUTTON_PIN = 38;
+static const int BUTTON_LED_PIN = 37; // LED ring: on while the system is active
+static const uint32_t BUTTON_DEBOUNCE_MS = 30;
+static const uint32_t DOUBLE_PRESS_MS = 500; // second press must start within this of the first
+
+// Off = mirror outputs held LOW. Set by the button (loop) and the web page (web task).
+static volatile bool systemActive = true;
+
+// Add radars here ({uart, OUT pin, mirror output pin}) and start their UART in setup().
 // S2 has 2 hardware UARTs: Serial0 and Serial1.
 static Radar radars[] = {
-    {Serial1, 18},
-    {Serial0, 13},
+    {Serial1, 18, 34}, // left
+    {Serial0, 13, 7},  // right
 };
 static const size_t NUM_RADARS = sizeof(radars) / sizeof(radars[0]);
 
@@ -55,7 +64,7 @@ static void addBytes(const char *key, const byte *values, byte count) {
 
 static void buildJson() {
   jsonLen = 0;
-  add("{\"radars\":[");
+  add("{\"active\":%d,\"radars\":[", systemActive);
   for (size_t i = 0; i < NUM_RADARS; i++) {
     Radar &r = radars[i];
     MyLD2410 &sensor = r.dev;
@@ -106,6 +115,32 @@ static void disableApGateway() {
 }
 
 // Onboard LED: fast blink = any radar detects, slow blink = a radar is offline, steady = all connected.
+// Debounced; a press counts once the double-press window after the first press has closed.
+static void updateButton(uint32_t now) {
+  static bool reading = false, pressed = false;
+  static uint32_t readingChangedMs = 0, firstPressMs = 0;
+  static int presses = 0;
+
+  bool raw = digitalRead(BUTTON_PIN) == LOW;
+  if (raw != reading) {
+    reading = raw;
+    readingChangedMs = now;
+  }
+  if (reading != pressed && now - readingChangedMs >= BUTTON_DEBOUNCE_MS) {
+    pressed = reading;
+    if (pressed && presses++ == 0) firstPressMs = now;
+  }
+  if (presses && !pressed && now - firstPressMs >= DOUBLE_PRESS_MS) {
+    systemActive = presses >= 2;
+    Serial.printf("Button: %s -> %s\n", presses >= 2 ? "double" : "single", systemActive ? "ON" : "OFF");
+    presses = 0;
+  }
+}
+
+static void updateMirrorOutputs() {
+  for (Radar &r : radars) digitalWrite(r.mirrorPin, systemActive && r.out());
+}
+
 static void updateLed(uint32_t now) {
   bool anyDetecting = false, allOnline = true;
   for (Radar &r : radars) {
@@ -122,6 +157,8 @@ static void updateLed(uint32_t now) {
 void setup() {
   Serial.begin(115200);
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_LED_PIN, OUTPUT);
   while (!Serial && millis() < 1500) delay(10); // let USB CDC enumerate if a host is attached
 
   // WiFi first: radar begin() can block for seconds if a sensor is missing.
@@ -134,6 +171,15 @@ void setup() {
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
   // POST /api/config?radar=0& one of:
   //   hold=10 | res=20 (reboots the radar) | gate=3&moving=40 | gate=3&stationary=30 | auto=10 (s to leave)
+  // POST /api/power?on=0|1
+  server.on("/api/power", HTTP_POST, [](AsyncWebServerRequest *req) {
+    if (!req->hasParam("on")) {
+      req->send(400, "text/plain", "missing on");
+      return;
+    }
+    systemActive = req->getParam("on")->value().toInt() != 0;
+    req->send(202);
+  });
   server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest *req) {
     int id = req->hasParam("radar") ? req->getParam("radar")->value().toInt() : -1;
     if (id < 0 || id >= (int)NUM_RADARS) {
@@ -185,6 +231,9 @@ void loop() {
     logStatus();
   }
 
+  updateButton(now);
+  updateMirrorOutputs();
+  digitalWrite(BUTTON_LED_PIN, systemActive);
   updateLed(now);
 
   delay(1); // let the idle task run; UART buffer holds ~10ms of radar data

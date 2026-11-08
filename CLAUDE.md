@@ -17,6 +17,8 @@ ESP32-S2 mini reads HLK-LD2410C 24GHz radar(s) and serves a web page to a nearby
 | TX | GPIO16 (RX) | GPIO11 (RX) |
 | RX | GPIO17 (TX) | GPIO12 (TX) |
 | OUT | GPIO18 | GPIO13 |
+| ESP output (mirrors OUT) | GPIO34 | GPIO7 |
+- On/off button (momentary): switch GPIO38↔GND (INPUT_PULLUP), LED ring GPIO37↔GND (non-polarized). Single press = off, double = on; off holds GPIO34/7 LOW.
 - 100µF + 100nF across radar VCC/GND. No level shifter.
 - Avoid GPIO0/45/46 (strapping), 19/20 (USB), 15 (onboard LED).
 

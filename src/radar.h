@@ -11,7 +11,8 @@ struct Radar {
   static const uint32_t ENHANCED_RETRY_MS = 5000; // retry enhanced mode this often if it didn't stick
   static const byte GATES = 9;
 
-  int outPin;
+  int outPin;    // radar's OUT (presence) -> ESP input
+  int mirrorPin; // ESP output that copies OUT while the system is active
   MyLD2410 dev;
   String firmware; // read once at begin(); empty if the radar didn't answer
 
@@ -33,12 +34,13 @@ struct Radar {
   uint32_t autoStartedMs = 0, autoNextPollMs = 0;
   uint32_t enhancedRetryAtMs = 0;
 
-  Radar(Stream &uart, int outPin) : outPin(outPin), dev(uart) {
+  Radar(Stream &uart, int outPin, int mirrorPin) : outPin(outPin), mirrorPin(mirrorPin), dev(uart) {
     for (byte gate = 0; gate < GATES; gate++) requestedMovingThreshold[gate] = requestedStationaryThreshold[gate] = -1;
   }
 
   void begin() {
     pinMode(outPin, INPUT_PULLDOWN); // reads 0 if no radar is wired
+    pinMode(mirrorPin, OUTPUT);
     if (!dev.begin()) return;
     if (dev.requestFirmware()) firmware = dev.getFirmware();
     readParameters();

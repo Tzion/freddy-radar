@@ -32,6 +32,28 @@
       font-size: 18px;
       margin: 0 0 8px;
     }
+    /* System on/off: off = the mirror outputs (GPIO34/7) are held off */
+    #power-button {
+      float: right;
+      font: inherit;
+      font-size: 13px;
+      font-weight: bold;
+      padding: 3px 12px;
+      border-radius: 6px;
+      color: #777;
+      background: #222;
+      border: 1px solid #444;
+    }
+    #power-button.on {
+      color: #000;
+      background: #33ff66;
+      border-color: #33ff66;
+    }
+    #power-button.off {
+      color: #ff6b6b;
+      background: #3a1010;
+      border-color: #a33;
+    }
     #connection-status {
       font-size: 12px;
       color: #888;
@@ -237,7 +259,8 @@
 </head>
 <body>
   <div id="status-panel">
-    <h1>Freddy Radar <span id="connection-status">connecting…</span></h1>
+    <h1>Freddy Radar <span id="connection-status">connecting…</span>
+      <button id="power-button" disabled>…</button></h1>
     <div id="sensor-columns"></div>
   </div>
   <canvas id="radar-canvas"></canvas>
@@ -537,8 +560,25 @@ firmware   ${firmwareText}</pre>`;
 
     let latestStatus = null; // last message from the ESP32, also used by the radar view
 
+    // ---------- System on/off (same as the physical button: single press = off, double = on) ----------
+
+    const powerButton = document.getElementById('power-button');
+
+    function renderPower(active) {
+      powerButton.disabled = active === undefined;
+      powerButton.className = active === undefined ? '' : active ? 'on' : 'off';
+      powerButton.textContent = active === undefined ? '…' : active ? 'ON' : 'OFF';
+    }
+
+    powerButton.addEventListener('click', () => {
+      const turnOn = !latestStatus.active;
+      fetch(`/api/power?on=${turnOn ? 1 : 0}`, { method: 'POST' });
+      renderPower(turnOn); // the next status message confirms it
+    });
+
     function renderStatus(status) {
       latestStatus = status;
+      renderPower(Boolean(status.active));
       if (document.querySelectorAll('.sensor-column').length !== status.radars.length) {
         buildSensorColumns(status.radars);
       }
@@ -581,6 +621,7 @@ firmware   ${firmwareText}</pre>`;
       // Sensor state is unknown while disconnected: show tiles as gray.
       document.querySelectorAll('.sensor-tile').forEach(tile => tile.className = 'sensor-tile');
       latestStatus = null; // stop adding new targets
+      renderPower(undefined);
       setTimeout(connect, RECONNECT_DELAY_MS);
     }
 
